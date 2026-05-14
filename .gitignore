@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+dist/
+build/
+.venv/
+venv/
+env/
+
+# Virtuell miljö
+gpx360env/
+
+# Temporära filer
+*.bin
+*.ass
+
+# Output-filer
+*.gpx
+*.mp4
+*.mov
+overlay_frames/
+
+# OS
+.DS_Store
+Thumbs.db
