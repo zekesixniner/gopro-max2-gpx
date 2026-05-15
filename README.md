@@ -225,6 +225,6 @@ python3 ~/bin/gopro-max2-gpx/gpx2kml.py GS010004.gpx --output myflight.kml
 ## Tested with
 
 - GoPro MAX2, firmware H24.02.01.22.00
-- Ubuntu 24.04 / WSL2 on Windows 11
+- Ubuntu 24.04 / WSL1 on Windows 11
 - Python 3.14
 - ffmpeg 8.0.1
