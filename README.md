@@ -168,7 +168,7 @@ No virtual environment needed – uses only Python's standard library.
 ### Basic usage
 
 ```
-python3 gpx2kml.py GS010004.gpx
+python3 ~/bin/gopro-max2-gpx/gpx2kml.py GS010004.gpx
 ```
 
 This creates `GS010004.kml` in the same directory.
@@ -176,9 +176,9 @@ This creates `GS010004.kml` in the same directory.
 ### Options
 
 ```
-python3 gpx2kml.py GS010004.gpx --interval 20
-python3 gpx2kml.py GS010004.gpx --color ff0000ff --width 3
-python3 gpx2kml.py GS010004.gpx --output myflight.kml
+python3 ~/bin/gopro-max2-gpx/gpx2kml.py GS010004.gpx --interval 20
+python3 ~/bin/gopro-max2-gpx/gpx2kml.py GS010004.gpx --color ff0000ff --width 3
+python3 ~/bin/gopro-max2-gpx/gpx2kml.py GS010004.gpx --output myflight.kml
 ```
 
 | Flag | Description | Default |
