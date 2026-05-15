@@ -29,7 +29,7 @@ The script `gpmf2gpx.py` handles this format and produces a standard GPX file wi
 
 ### System
 
-Ubuntu or [WSL](https://en.wikipedia.org/wiki/Windows_Subsystem_for_Linux)
+Ubuntu or [WSL](https://en.wikipedia.org/wiki/Windows_Subsystem_for_Linux) in Windows
 ---
 
 ```
