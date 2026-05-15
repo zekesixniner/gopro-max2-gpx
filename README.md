@@ -50,8 +50,9 @@ pip install gpxpy
 ## Installation
 
 ```bash
-git clone <this-repo>
-cd <this-repo>
+cd ~/bin
+git clone https://github.com/zekesixniner/gopro-max2-gpx
+cd <working PATH>
 
 python3 -m venv ~/gpx360env
 source ~/gpx360env/bin/activate
@@ -64,10 +65,10 @@ pip install gpxpy
 
 ### Step 1: Get the video start time
 
-Get `creation_time` from the **MP4 file** exported by GoPro Player (not from the `.360` file):
+Get `creation_time` from the **360 file**:
 
 ```bash
-ffprobe -v quiet -show_format GS010004.mp4 | grep creation_time
+ffprobe -v quiet -show_format GS010004.360 | grep creation_time
 ```
 
 Example output:
@@ -75,7 +76,7 @@ Example output:
 TAG:creation_time=2026-03-15T10:44:45.000000Z
 ```
 
-> **Important:** Always use `creation_time` from the MP4 file. The `.360` file's internal timestamp may have the wrong date.
+> **Important:** Always use `creation_time` from the 360 file. The `.mp4` file's internal timestamp may have the wrong date.
 
 ---
 
