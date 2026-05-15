@@ -101,7 +101,7 @@ Look for the line containing `GoPro MET`. If it is not track 3, adjust the `-map
 ### Step 3: Convert to GPX
 
 ```bash
-python3 gpmf2gpx.py GS010004.bin GS010004.gpx \
+python3 ~/bin/gopro-max2-gpx/gpmf2gpx.py GS010004.bin GS010004.gpx \
   --creation-time 2026-03-15T10:44:45
 ```
 
