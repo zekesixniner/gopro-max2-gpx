@@ -1,6 +1,6 @@
 # GoPro MAX2 – GPS Extraction to GPX
 
-Tools for extracting GPS data from GoPro MAX2 `.360` files and saving as standard GPX format.
+Tools for extracting GPS data from GoPro MAX2 `.360` files and saving as standard GPX format, and converting GPX to KML for viewing in Google Earth.
 
 ---
 
@@ -11,6 +11,7 @@ Tools for extracting GPS data from GoPro MAX2 `.360` files and saving as standar
 - [Installation](#installation)
 - [Step-by-step](#step-by-step)
 - [Verifying the result](#verifying-the-result)
+- [Converting GPX to KML](#converting-gpx-to-kml)
 - [Technical details](#technical-details)
 - [Known limitations](#known-limitations)
 
@@ -28,20 +29,21 @@ The script `gpmf2gpx.py` handles this format and produces a standard GPX file wi
 
 ### System
 
-```bash
+```
 sudo apt-get install -y ffmpeg python3 python3-pip python3-venv
 ```
 
 ### Python environment
 
-```bash
+```
 python3 -m venv ~/gpx360env
 source ~/gpx360env/bin/activate
 pip install gpxpy
 ```
 
 > **Note:** Always activate the virtual environment before running the script:
-> ```bash
+>
+> ```
 > source ~/gpx360env/bin/activate
 > ```
 
@@ -49,7 +51,7 @@ pip install gpxpy
 
 ## Installation
 
-```bash
+```
 cd ~/bin
 git clone https://github.com/zekesixniner/gopro-max2-gpx
 cd <working PATH>
@@ -67,11 +69,12 @@ pip install gpxpy
 
 Get `creation_time` from the **360 file**:
 
-```bash
+```
 ffprobe -v quiet -show_format GS010004.360 | grep creation_time
 ```
 
 Example output:
+
 ```
 TAG:creation_time=2026-03-15T10:44:45.000000Z
 ```
@@ -84,13 +87,13 @@ TAG:creation_time=2026-03-15T10:44:45.000000Z
 
 GPS data is stored in track 3 (`GoPro MET`) inside the `.360` file:
 
-```bash
+```
 ffmpeg -y -i GS010004.360 -codec copy -map 0:3 -f rawvideo GS010004.bin
 ```
 
 Verify that the correct track is used:
 
-```bash
+```
 ffprobe -v quiet -show_streams GS010004.360 | grep handler_name
 ```
 
@@ -100,7 +103,7 @@ Look for the line containing `GoPro MET`. If it is not track 3, adjust the `-map
 
 ### Step 3: Convert to GPX
 
-```bash
+```
 python3 ~/bin/gopro-max2-gpx/gpmf2gpx.py GS010004.bin GS010004.gpx \
   --creation-time 2026-03-15T10:44:45
 ```
@@ -108,12 +111,13 @@ python3 ~/bin/gopro-max2-gpx/gpmf2gpx.py GS010004.bin GS010004.gpx \
 Flags:
 
 | Flag | Description |
-|---|---|
+| --- | --- |
 | `--creation-time` | Video start time from step 1 (required) |
 | `--keep-nofix` | Keep points without GPS fix (GPSFIX=0) |
 | `--verbose` | Show detailed parsing info |
 
 Expected output:
+
 ```
 [INFO] Video start time: 2026-03-15 10:44:45+00:00
 [INFO] Reading GS010004.bin (4585 KB)...
@@ -134,7 +138,7 @@ Done!
 
 ## Verifying the result
 
-```bash
+```
 python3 -c "
 import xml.etree.ElementTree as ET
 tree = ET.parse('GS010004.gpx')
@@ -149,6 +153,50 @@ print(f'End:      {times[-1]}')
 print(f'Altitude: {min(eles):.0f} - {max(eles):.0f} m')
 "
 ```
+
+---
+
+## Converting GPX to KML
+
+The script `gpx2kml.py` converts a GPX file to KML for viewing in Google Earth. It creates:
+
+- A line along the flight path at correct altitude
+- Vertical lines down to ground level at regular intervals (like fence posts)
+
+No virtual environment needed – uses only Python's standard library.
+
+### Basic usage
+
+```
+python3 gpx2kml.py GS010004.gpx
+```
+
+This creates `GS010004.kml` in the same directory.
+
+### Options
+
+```
+python3 gpx2kml.py GS010004.gpx --interval 20
+python3 gpx2kml.py GS010004.gpx --color ff0000ff --width 3
+python3 gpx2kml.py GS010004.gpx --output myflight.kml
+```
+
+| Flag | Description | Default |
+| --- | --- | --- |
+| `--output` | KML output file | same name as input |
+| `--interval` | Points between each vertical line | `10` |
+| `--color` | Line color in KML AABBGGRR format | `ff00ffff` (yellow) |
+| `--width` | Line width in pixels | `2` |
+
+### Common colors (AABBGGRR format)
+
+| Color | Code |
+| --- | --- |
+| Yellow | `ff00ffff` |
+| Red | `ff0000ff` |
+| Green | `ff00ff00` |
+| Blue | `ffff0000` |
+| White | `ffffffff` |
 
 ---
 
@@ -167,10 +215,10 @@ print(f'Altitude: {min(eles):.0f} - {max(eles):.0f} m')
 ## Known limitations
 
 | Issue | Cause | Solution |
-|---|---|---|
+| --- | --- | --- |
 | Track number is not 3 | Depends on camera settings | Run `ffprobe` and look for `GoPro MET` |
 | No timestamps in GPX | MAX2 does not use `GPSU` | Script uses `STMP` + `--creation-time` |
-| Wrong date in GPX | `.360` file internal timestamp | Always use `creation_time` from the MP4 file |
+| Wrong date in GPX | `.360` file internal timestamp | Always use `creation_time` from the 360 file |
 
 ---
 
