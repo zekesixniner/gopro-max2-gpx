@@ -29,6 +29,9 @@ The script `gpmf2gpx.py` handles this format and produces a standard GPX file wi
 
 ### System
 
+Ubuntu or WSL: https://en.wikipedia.org/wiki/Windows_Subsystem_for_Linux 
+---
+
 ```
 sudo apt-get install -y ffmpeg python3 python3-pip python3-venv
 ```
