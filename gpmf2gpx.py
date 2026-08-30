@@ -1,22 +1,36 @@
-#!/usr/bin/env python3
+#!/home/petersa/gpx360env/bin/python3
 """
 gpmf2gpx.py
 ===========
-Extraherar GPS-data från GoPro MAX/MAX2 GPMF-binärfiler och sparar som GPX.
-Använder STMP (mikrosekunder från videostart) + creation_time för tidsstämpling.
+Extraherar GPS-data från en GoPro MAX/MAX2 .360-fil och sparar som GPX.
+Ett enda kommando: hittar GoPro MET-spåret och creation_time via ffprobe,
+extraherar GPMF-strömmen via ffmpeg till en temporär fil, parsar GPS9-data
+(STMP-tidsstämplar) och skriver GPX. Temp-filen städas bort automatiskt.
 
 Krav:
   pip install gpxpy
+  ffmpeg/ffprobe måste finnas i PATH
 
 Användning:
-  python3 gpmf2gpx.py GS010004.bin GS010004.gpx --creation-time 2026-03-15T10:44:45
-  python3 gpmf2gpx.py GS010004.bin GS010004.gpx --creation-time 2026-03-15T10:44:45 --verbose
+  gpmf2gpx.py GS010004.360 GS010004.gpx
+  gpmf2gpx.py GS010004.360 GS010004.gpx --verbose
+  gpmf2gpx.py GS010004.360 GS010004.gpx --track 3 --creation-time 2026-03-15T10:44:45
+
+Manuella overrides (normalt onödiga, auto-detekteras):
+  --track            Forcera streamindex istället för auto-detektion av "GoPro MET"
+  --creation-time    Forcera video-starttid istället för ffprobe-värdet
+
+Direkt .bin-input stöds fortfarande (hoppar över ffprobe/ffmpeg-steget):
+  gpmf2gpx.py GS010004.bin GS010004.gpx --creation-time 2026-03-15T10:44:45
 """
 
 import struct
 import sys
 import os
+import json
 import argparse
+import subprocess
+import tempfile
 from datetime import datetime, timezone, timedelta
 
 try:
@@ -25,6 +39,62 @@ try:
 except ImportError:
     print("[FEL] Installera gpxpy: pip install gpxpy")
     sys.exit(1)
+
+
+# ──────────────────────────────────────────────
+# FFPROBE / FFMPEG-HJÄLPFUNKTIONER
+# ──────────────────────────────────────────────
+
+def run_ffprobe_json(input_file):
+    """Kör ffprobe en gång och returnerar full JSON (format + streams)."""
+    try:
+        result = subprocess.run(
+            ["ffprobe", "-v", "quiet", "-print_format", "json",
+             "-show_format", "-show_streams", input_file],
+            capture_output=True, text=True, check=True,
+        )
+    except FileNotFoundError:
+        print("[FEL] ffprobe hittades inte. Är ffmpeg/ffprobe installerat och i PATH?")
+        sys.exit(1)
+    except subprocess.CalledProcessError as e:
+        print(f"[FEL] ffprobe misslyckades: {e.stderr.strip()}")
+        sys.exit(1)
+    return json.loads(result.stdout)
+
+
+def find_creation_time(ffprobe_data, verbose=False):
+    tags = ffprobe_data.get("format", {}).get("tags", {})
+    ct = tags.get("creation_time")
+    if verbose and ct:
+        print(f"[INFO] creation_time hittad via ffprobe: {ct}")
+    return ct
+
+
+def find_gopro_met_track(ffprobe_data, verbose=False):
+    """Hittar streamindex för spåret vars handler_name innehåller 'GoPro MET'."""
+    for stream in ffprobe_data.get("streams", []):
+        handler = stream.get("tags", {}).get("handler_name", "")
+        if "gopro met" in handler.lower():
+            idx = stream["index"]
+            if verbose:
+                print(f"[INFO] GoPro MET-spår hittat: index {idx} (handler_name='{handler}')")
+            return idx
+    return None
+
+
+def extract_gpmf_track(input_file, track_index, tmp_path, verbose=False):
+    cmd = ["ffmpeg", "-y", "-i", input_file, "-codec", "copy",
+           "-map", f"0:{track_index}", "-f", "rawvideo", tmp_path]
+    if verbose:
+        print(f"[INFO] Kör: {' '.join(cmd)}")
+    try:
+        subprocess.run(cmd, capture_output=True, text=True, check=True)
+    except FileNotFoundError:
+        print("[FEL] ffmpeg hittades inte. Är ffmpeg installerat och i PATH?")
+        sys.exit(1)
+    except subprocess.CalledProcessError as e:
+        print(f"[FEL] ffmpeg-extraktion misslyckades: {e.stderr.strip()}")
+        sys.exit(1)
 
 
 # ──────────────────────────────────────────────
@@ -242,69 +312,114 @@ def write_gpx(points, output_path, skip_nofix=True):
 # MAIN
 # ──────────────────────────────────────────────
 
+def parse_creation_time(ct_str):
+    ct = ct_str.replace("Z", "+00:00")
+    if "+" not in ct and "-" not in ct[10:]:
+        ct += "+00:00"
+    dt = datetime.fromisoformat(ct)
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=timezone.utc)
+    return dt
+
+
 def main():
     parser = argparse.ArgumentParser(
-        description="Extrahera GPS från GoPro MAX/MAX2 GPMF-binärfil till GPX"
+        description="Extrahera GPS från en GoPro MAX/MAX2 .360-fil (eller redan extraherad "
+                     ".bin-fil) till GPX"
     )
-    parser.add_argument("input",  help="GPMF-binärfil (t.ex. GS010004.bin)")
+    parser.add_argument("input",  help="GoPro .360-fil (eller .bin om redan extraherad)")
     parser.add_argument("output", help="GPX-outputfil (t.ex. GS010004.gpx)")
-    parser.add_argument("--creation-time", required=True,
-                        help="Videons creation_time från ffprobe, t.ex. 2026-03-15T10:44:45")
+    parser.add_argument("--track", type=int, default=None,
+                        help="Forcera streamindex (annars auto-detekteras 'GoPro MET' via ffprobe)")
+    parser.add_argument("--creation-time", default=None,
+                        help="Forcera video-starttid, t.ex. 2026-03-15T10:44:45 "
+                             "(annars läses den från .360-filen via ffprobe)")
     parser.add_argument("-v", "--verbose",  action="store_true")
     parser.add_argument("--keep-nofix",     action="store_true",
                         help="Behåll punkter utan GPS-fix (GPSFIX=0)")
+    parser.add_argument("--keep-bin",       action="store_true",
+                        help="Spara den extraherade GPMF-binärfilen istället för att radera den")
     args = parser.parse_args()
 
     if not os.path.exists(args.input):
         print(f"[FEL] Hittar inte: {args.input}")
         sys.exit(1)
 
-    # Parsa creation_time
+    is_bin_input = args.input.lower().endswith(".bin")
+    tmp_bin = None
+
     try:
-        ct = args.creation_time.replace("Z", "+00:00")
-        if "+" not in ct and "-" not in ct[10:]:
-            ct += "+00:00"
-        video_start_time = datetime.fromisoformat(ct)
-        if video_start_time.tzinfo is None:
-            video_start_time = video_start_time.replace(tzinfo=timezone.utc)
-    except Exception as e:
-        print(f"[FEL] Kunde inte parsa creation-time: {e}")
-        sys.exit(1)
+        if is_bin_input:
+            # Bakåtkompatibelt läge: redan extraherad binärfil
+            if not args.creation_time:
+                print("[FEL] --creation-time krävs när input redan är en .bin-fil "
+                      "(ffprobe kan inte läsa creation_time ur en råbinär GPMF-fil).")
+                sys.exit(1)
+            video_start_time = parse_creation_time(args.creation_time)
+            gpmf_path = args.input
+        else:
+            # Normalläge: .360 (eller .mp4/.mov) — auto-extrahera
+            print(f"[INFO] Läser metadata från {args.input} (ffprobe)...")
+            ffprobe_data = run_ffprobe_json(args.input)
 
-    print(f"[INFO] Video starttid: {video_start_time}")
-    print(f"[INFO] Läser {args.input} ({os.path.getsize(args.input)/1024:.0f} KB)...")
-    with open(args.input, "rb") as f:
-        data = f.read()
+            ct_str = args.creation_time or find_creation_time(ffprobe_data, verbose=args.verbose)
+            if not ct_str:
+                print("[FEL] Kunde inte hitta creation_time via ffprobe. Ange manuellt med --creation-time.")
+                sys.exit(1)
+            video_start_time = parse_creation_time(ct_str)
 
-    print("[INFO] Parsar GPMF-telemetri...")
-    points = parse_gpmf(data, video_start_time, verbose=args.verbose)
+            track = args.track if args.track is not None else find_gopro_met_track(ffprobe_data, verbose=args.verbose)
+            if track is None:
+                print("[FEL] Hittade inget 'GoPro MET'-spår via ffprobe. Ange manuellt med --track.")
+                sys.exit(1)
 
-    if not points:
-        print("[FEL] Inga GPS-punkter hittades!")
-        sys.exit(1)
+            if args.keep_bin:
+                tmp_bin = os.path.splitext(args.output)[0] + ".bin"
+            else:
+                fd, tmp_bin = tempfile.mkstemp(suffix=".bin")
+                os.close(fd)
 
-    print(f"[INFO] Hittade {len(points)} GPS-punkter")
-    n_ok, n_skip = write_gpx(points, args.output, skip_nofix=not args.keep_nofix)
+            print(f"[INFO] Extraherar GPMF-spår {track} med ffmpeg...")
+            extract_gpmf_track(args.input, track, tmp_bin, verbose=args.verbose)
+            gpmf_path = tmp_bin
 
-    print(f"\n✅ Klar!")
-    print(f"   Sparade:  {n_ok} punkter → {args.output}")
-    if n_skip:
-        print(f"   Hoppade:  {n_skip} punkter utan GPS-fix")
+        print(f"[INFO] Video starttid: {video_start_time}")
+        print(f"[INFO] Läser {gpmf_path} ({os.path.getsize(gpmf_path)/1024:.0f} KB)...")
+        with open(gpmf_path, "rb") as f:
+            data = f.read()
 
-    valid = [p for p in points if p.get("fix", 3) != 0]
-    if valid:
-        lats   = [p["lat"]   for p in valid]
-        lons   = [p["lon"]   for p in valid]
-        alts   = [p["alt"]   for p in valid]
-        speeds = [p["speed"] for p in valid]
-        print(f"\n   Latitud:   {min(lats):.5f} – {max(lats):.5f}")
-        print(f"   Longitud:  {min(lons):.5f} – {max(lons):.5f}")
-        print(f"   Höjd:      {min(alts):.0f} – {max(alts):.0f} m")
-        print(f"   Hastighet: 0 – {max(speeds):.1f} km/h")
-        timed = [p for p in valid if p["time"]]
-        if timed:
-            print(f"   Starttid:  {timed[0]['time']}")
-            print(f"   Sluttid:   {timed[-1]['time']}")
+        print("[INFO] Parsar GPMF-telemetri...")
+        points = parse_gpmf(data, video_start_time, verbose=args.verbose)
+
+        if not points:
+            print("[FEL] Inga GPS-punkter hittades!")
+            sys.exit(1)
+
+        print(f"[INFO] Hittade {len(points)} GPS-punkter")
+        n_ok, n_skip = write_gpx(points, args.output, skip_nofix=not args.keep_nofix)
+
+        print(f"\n✅ Klar!")
+        print(f"   Sparade:  {n_ok} punkter → {args.output}")
+        if n_skip:
+            print(f"   Hoppade:  {n_skip} punkter utan GPS-fix")
+
+        valid = [p for p in points if p.get("fix", 3) != 0]
+        if valid:
+            lats   = [p["lat"]   for p in valid]
+            lons   = [p["lon"]   for p in valid]
+            alts   = [p["alt"]   for p in valid]
+            speeds = [p["speed"] for p in valid]
+            print(f"\n   Latitud:   {min(lats):.5f} – {max(lats):.5f}")
+            print(f"   Longitud:  {min(lons):.5f} – {max(lons):.5f}")
+            print(f"   Höjd:      {min(alts):.0f} – {max(alts):.0f} m")
+            print(f"   Hastighet: 0 – {max(speeds):.1f} km/h")
+            timed = [p for p in valid if p["time"]]
+            if timed:
+                print(f"   Starttid:  {timed[0]['time']}")
+                print(f"   Sluttid:   {timed[-1]['time']}")
+    finally:
+        if tmp_bin and not args.keep_bin and os.path.exists(tmp_bin) and not is_bin_input:
+            os.remove(tmp_bin)
 
 
 if __name__ == "__main__":
