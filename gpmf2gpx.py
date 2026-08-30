@@ -1,4 +1,4 @@
-#!/home/petersa/gpx360env/bin/python3
+#!/home/peter/dev/gopro-max2-gpx/venv/bin/python3
 """
 gpmf2gpx.py
 ===========
