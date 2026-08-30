@@ -22,6 +22,14 @@ Manuella overrides (normalt onödiga, auto-detekteras):
 
 Direkt .bin-input stöds fortfarande (hoppar över ffprobe/ffmpeg-steget):
   gpmf2gpx.py GS010004.bin GS010004.gpx --creation-time 2026-03-15T10:44:45
+
+Tidsstämpling:
+  Varje GPS9-kluster har en egen starttid (STMP, mikrosekunder från videostart).
+  Punkterna INOM ett kluster tidsstämplas genom att interpolera jämnt mellan
+  klustrets egen starttid och NÄSTA klusters starttid (dvs. den verkliga
+  förfluta tiden delat på antalet punkter i klustret) — inte en fast antagen
+  samplingsfrekvens. GPS9 levereras i kluster om typiskt 7-10 punkter per
+  ~1 sekund, vilket INTE är samma sak som 18Hz jämnt fördelat inom klustret.
 """
 
 import struct
@@ -127,17 +135,14 @@ def parse_scal(data, offset, size, repeat, type_char):
 def parse_strm(data, offset, end, video_start_time, verbose=False):
     """
     Parsar en STRM-container.
-    Använder STMP (mikrosekunder från videostart) för att tidsstämpla GPS9-punkter.
+    Returnerar (cluster_start, points) där points saknar 'time' — det sätts
+    senare i ett interpoleringssteg som känner till NÄSTA klusters starttid.
     """
-    points    = []
     scal      = None
     gpsfix    = 3
     stnm      = ""
     stmp_us   = None   # mikrosekunder från videostart för detta kluster
-    tsmp      = None   # totalt antal samples
-    n_samples = None   # antal GPS-samples i detta kluster
 
-    # Första pass: läs all metadata
     meta_offset = offset
     gps9_offset = None
     gps9_size   = None
@@ -155,8 +160,6 @@ def parse_strm(data, offset, end, video_start_time, verbose=False):
             stnm = payload.rstrip(b"\x00").decode("latin-1", errors="replace")
         elif fourcc == "STMP":
             stmp_us = struct.unpack_from(">Q", payload, 0)[0]
-        elif fourcc == "TSMP":
-            tsmp = struct.unpack_from(">L", payload, 0)[0]
         elif fourcc == "SCAL":
             scal = parse_scal(data, payload_start, size, repeat, type_char)
         elif fourcc == "GPSF":
@@ -171,17 +174,14 @@ def parse_strm(data, offset, end, video_start_time, verbose=False):
     if verbose:
         print(f"    STRM '{stnm}'  stmp={stmp_us}µs  gpsfix={gpsfix}  scal={scal}")
 
-    # Om ingen GPS-data i denna STRM, hoppa över
     if gps9_offset is None or scal is None:
-        return []
+        return None, []
 
-    # Beräkna starttid för detta kluster
     if video_start_time and stmp_us is not None:
         cluster_start = video_start_time + timedelta(microseconds=stmp_us)
     else:
         cluster_start = None
 
-    # Bygg skalvektor
     n_fields = gps9_size // 4
     if len(scal) == 1:
         scales = [scal[0]] * n_fields
@@ -191,8 +191,7 @@ def parse_strm(data, offset, end, video_start_time, verbose=False):
     if verbose:
         print(f"      GPS9: {gps9_repeat} punkter, scales={scales[:5]}, cluster_start={cluster_start}")
 
-    # Parsa GPS-punkter
-    # GPS9 samplas med ~18 Hz, fördela jämnt inom klustret
+    points = []
     for i in range(gps9_repeat):
         base = gps9_offset + i * gps9_size
         try:
@@ -208,27 +207,20 @@ def parse_strm(data, offset, end, video_start_time, verbose=False):
         if lat == 0.0 and lon == 0.0:
             continue
 
-        # Tidsstämpel: fördela jämnt inom klustret
-        if cluster_start:
-            # ~18 Hz GPS-frekvens för GoPro MAX2
-            t = cluster_start + timedelta(seconds=i / 18.0)
-        else:
-            t = None
-
         points.append({
             "lat":   lat,
             "lon":   lon,
             "alt":   alt,
             "speed": spd2d * 3.6,  # km/h
             "fix":   gpsfix,
-            "time":  t,
         })
 
-    return points
+    return cluster_start, points
 
 
 def parse_devc(data, offset, end, video_start_time, verbose=False):
-    points = []
+    """Returnerar en lista av (cluster_start, points) — en post per GPS-kluster i detta DEVC-block."""
+    clusters = []
     while offset + 8 <= end:
         hdr = read_header(data, offset)
         if not hdr:
@@ -238,16 +230,22 @@ def parse_devc(data, offset, end, video_start_time, verbose=False):
         payload_end   = payload_start + size * repeat
 
         if fourcc == "STRM" and type_char == 0:
-            pts = parse_strm(data, payload_start, payload_end,
-                             video_start_time, verbose=verbose)
-            points.extend(pts)
+            cluster_start, pts = parse_strm(data, payload_start, payload_end,
+                                             video_start_time, verbose=verbose)
+            if pts:
+                clusters.append((cluster_start, pts))
 
         offset = next_offset(offset, size, repeat)
-    return points
+    return clusters
 
 
 def parse_gpmf(data, video_start_time, verbose=False):
-    all_points = []
+    """
+    Samlar alla GPS-kluster i filordning, tidsstämplar sedan punkterna genom
+    att interpolera mellan varje klusters starttid och nästa klusters
+    starttid (istället för att anta en fast samplingsfrekvens).
+    """
+    all_clusters = []
     offset     = 0
     length     = len(data)
     devc_count = 0
@@ -264,14 +262,54 @@ def parse_gpmf(data, video_start_time, verbose=False):
             devc_count += 1
             if verbose:
                 print(f"\nDEVC #{devc_count} @ offset={offset}")
-            pts = parse_devc(data, payload_start, payload_end,
-                             video_start_time, verbose=verbose)
-            all_points.extend(pts)
+            clusters = parse_devc(data, payload_start, payload_end,
+                                  video_start_time, verbose=verbose)
+            all_clusters.extend(clusters)
 
         offset = next_offset(offset, size, repeat)
 
     if verbose:
-        print(f"\nTotalt: {devc_count} DEVC-block, {len(all_points)} GPS-punkter")
+        print(f"\nTotalt: {devc_count} DEVC-block, {len(all_clusters)} GPS-kluster")
+
+    # Dela upp i kluster med känd starttid (interpolerbara) och utan (okända).
+    timed_clusters   = [(t, pts) for t, pts in all_clusters if t is not None]
+    untimed_clusters = [(t, pts) for t, pts in all_clusters if t is None]
+
+    # Klustren ska redan komma i stigande STMP-ordning ur filen, men var säker.
+    timed_clusters.sort(key=lambda c: c[0])
+
+    all_points = []
+    prev_span_per_point = None  # fallback om sista klustrets nästa-starttid saknas
+
+    for i, (start, pts) in enumerate(timed_clusters):
+        n = len(pts)
+        if i + 1 < len(timed_clusters):
+            next_start = timed_clusters[i + 1][0]
+            span = (next_start - start).total_seconds()
+            # Skydd mot avvikande/negativa spann (t.ex. filhopp) — falla tillbaka
+            if span <= 0 or span > 5:
+                span = None
+        else:
+            span = None
+
+        if span is not None and n > 0:
+            step = span / n
+        elif prev_span_per_point is not None:
+            step = prev_span_per_point
+        else:
+            step = 1.0 / 10.0  # rimlig defaultfallback (~10Hz) om inget annat finns
+
+        if n > 0 and span is not None:
+            prev_span_per_point = step
+
+        for j, p in enumerate(pts):
+            p["time"] = start + timedelta(seconds=j * step)
+            all_points.append(p)
+
+    for _, pts in untimed_clusters:
+        for p in pts:
+            p["time"] = None
+            all_points.append(p)
 
     timed   = sorted([p for p in all_points if p["time"]], key=lambda p: p["time"])
     untimed = [p for p in all_points if not p["time"]]
@@ -350,7 +388,6 @@ def main():
 
     try:
         if is_bin_input:
-            # Bakåtkompatibelt läge: redan extraherad binärfil
             if not args.creation_time:
                 print("[FEL] --creation-time krävs när input redan är en .bin-fil "
                       "(ffprobe kan inte läsa creation_time ur en råbinär GPMF-fil).")
@@ -358,7 +395,6 @@ def main():
             video_start_time = parse_creation_time(args.creation_time)
             gpmf_path = args.input
         else:
-            # Normalläge: .360 (eller .mp4/.mov) — auto-extrahera
             print(f"[INFO] Läser metadata från {args.input} (ffprobe)...")
             ffprobe_data = run_ffprobe_json(args.input)
 
